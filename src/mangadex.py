@@ -1,16 +1,11 @@
 import asyncio
-import gc
 import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
-
-# import uvloop
-
-# I want to go as fast as possible for small, short-running scripts.
-gc.disable()
+import uvloop
 
 
 @dataclass
@@ -26,9 +21,17 @@ class Page:
     http_path: str
     dest: Path
 
+    async def download(self):
+        print(self.dest)
+        r = await self.http_client.get(self.http_path)
+        r.raise_for_status()
+        os.makedirs(self.dest.parent, exist_ok=True)
+        self.dest.write_bytes(r.content)
+
 
 async def _main(*, manga_url, workers):
     # TODO: https://www.python-httpx.org/http2/
+    #       Okay I tried http2, server's pretty unstable.
     # API v2 documentation can be read at https://api.mangadex.org/v2/
     api = httpx.AsyncClient(base_url="https://api.mangadex.org/v2/", timeout=None)
     print("Getting chapter list.")
@@ -55,6 +58,7 @@ async def _main(*, manga_url, workers):
                     number=c["chapter"],
                 )
             )
+            break  # just one chapter for now to iterate on downloading
 
     print(f"Found {chapter_q.qsize()} chapters (lang {lang}).")
 
@@ -69,8 +73,8 @@ async def _main(*, manga_url, workers):
             except asyncio.QueueEmpty:
                 return
 
-            # TODO: add switch to pass query param saver=true for pre-compressed images
-            r = await api.get(f"/chapter/{chapter.id}")
+            # TODO: pass cli option for data saver
+            r = await api.get(f"/chapter/{chapter.id}", params={"saver": "true"})
             r.raise_for_status()
             chapter_data = r.json()["data"]
 
@@ -84,7 +88,6 @@ async def _main(*, manga_url, workers):
                     )
 
                 dest_p = title_p / chapter.number / filename
-                print(dest_p)
 
                 if dest_p.is_file():
                     print(f"skipped {dest_p} because file exists.")
@@ -92,15 +95,25 @@ async def _main(*, manga_url, workers):
 
                 p = Page(
                     http_client=downloaders[server],
-                    http_path=filename,
+                    http_path=f"/{chapter_data['hash']}/{filename}",
                     dest=dest_p,
                 )
                 page_q.put_nowait(p)
 
-    # TODO: download
     await asyncio.gather(*(page_worker() for _ in range(workers)))
 
-    print(page_q.qsize())
+    # Consume from page_q.
+    async def downloader_worker():
+        while True:
+            try:
+                page = page_q.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+
+            # TODO: failure modes?
+            await page.download()
+
+    await asyncio.gather(*(downloader_worker() for _ in range(workers)))
 
     await api.aclose()
     for http_client in downloaders.values():
@@ -123,6 +136,5 @@ def main():
 
     assert num_workers > 0
 
-    # This takes a little while to warmup.
-    # uvloop.install()
+    uvloop.install()
     asyncio.run(_main(manga_url=manga_url, workers=num_workers))
