@@ -3,17 +3,13 @@ import gc
 import os
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 import httpx
 
-# from pathlib import Path
-
-
 # import uvloop
 
-# I want to go as fast as possible for small scripts,
-# and a few manual dels is primarily useful for readability
-# (the memory freed is barely thorough in comparison)
+# I want to go as fast as possible for small, short-running scripts.
 gc.disable()
 
 
@@ -24,60 +20,91 @@ class Chapter:
     number: str
 
 
-async def _main(*, page, workers):
+@dataclass
+class Page:
+    http_client: httpx.AsyncClient
+    http_path: str
+    dest: Path
+
+
+async def _main(*, manga_url, workers):
     # TODO: https://www.python-httpx.org/http2/
-    http = httpx.AsyncClient(base_url="https://api.mangadex.org/v2/", timeout=None)
+    # API v2 documentation can be read at https://api.mangadex.org/v2/
+    api = httpx.AsyncClient(base_url="https://api.mangadex.org/v2/", timeout=None)
     print("Getting chapter list.")
 
     # https://mangadex.org/title/499/teppu/
-    manga_id = page.rstrip("/").split("/")[-2]
-    # r = await http.get(f"/manga/{manga_id}")
-    # r.raise_for_status()
-    # data_manga = r.json()["data"]
-    # title = data_manga["title"]
-    # title_p = Path(title)
-    # title_p.mkdir(exist_ok=True)
-    # del data_manga
+    manga_id = manga_url.rstrip("/").split("/")[-2]
+    r = await api.get(f"/manga/{manga_id}")
+    r.raise_for_status()
+    data_manga = r.json()["data"]
+    title = data_manga["title"]
+    title_p = Path(title)
 
-    lang = "gb"  # english. They don't support this as a query param.
-    r = await http.get(f"/manga/{manga_id}/chapters")
+    lang = "gb"  # english. They don't support this as a query param yet.
+    chapter_q = asyncio.Queue()
+    r = await api.get(f"/manga/{manga_id}/chapters")
     r.raise_for_status()
     data_chapters = r.json()["data"]["chapters"]
-    chapters = [
-        Chapter(
-            id=_["id"],
-            name=_["title"],
-            number=_["chapter"],
-        )
-        for _ in data_chapters
-        if _["language"] == lang
-    ]
-    del data_chapters
+    for c in data_chapters:
+        if c["language"] == lang:
+            chapter_q.put_nowait(
+                Chapter(
+                    id=c["id"],
+                    name=c["title"],
+                    number=c["chapter"],
+                )
+            )
 
-    print(f"Found {len(chapters)} chapters (lang {lang}).")
+    print(f"Found {chapter_q.qsize()} chapters (lang {lang}).")
 
-    for c in chapters:
-        # TODO: make this not sequential.
-        r = await http.get(f"/chapter/{c.id}")
-        r.raise_for_status()
-        chapter_data = r.json()["data"]
+    downloaders = dict()  # are dicts async safe?
+    page_q = asyncio.Queue()
 
-        # btw there's a serverFallback, I'm ignoring for now.
-        image_uris = [
-            f"{chapter_data['server']}{filename}" for filename in chapter_data["pages"]
-        ]
-        del chapter_data
+    # Consume from chapter_q, produce to page_q.
+    async def page_worker():
+        while True:
+            try:
+                chapter = chapter_q.get_nowait()
+            except asyncio.QueueEmpty:
+                return
 
-        # TODO: populate a global client pool
-        # as we queue the requests to make
-        # also skip if file exists
-        print("\n".join(image_uris))
+            # TODO: add switch to pass query param saver=true for pre-compressed images
+            r = await api.get(f"/chapter/{chapter.id}")
+            r.raise_for_status()
+            chapter_data = r.json()["data"]
 
-        # chapter_p = title_p / c.number
-        # image_p = chapter_p / page_name
-        # image_p.is_file()
+            # btw there's a serverFallback, I'm ignoring for now.
+            for filename in chapter_data["pages"]:
+                # Build up the client pool.
+                server = chapter_data["server"]
+                if server not in downloaders:
+                    downloaders[server] = httpx.AsyncClient(
+                        base_url=server, timeout=None
+                    )
 
-    await http.aclose()
+                dest_p = title_p / chapter.number / filename
+                print(dest_p)
+
+                if dest_p.is_file():
+                    print(f"skipped {dest_p} because file exists.")
+                    continue
+
+                p = Page(
+                    http_client=downloaders[server],
+                    http_path=filename,
+                    dest=dest_p,
+                )
+                page_q.put_nowait(p)
+
+    # TODO: download
+    await asyncio.gather(*(page_worker() for _ in range(workers)))
+
+    print(page_q.qsize())
+
+    await api.aclose()
+    for http_client in downloaders.values():
+        await http_client.aclose()
 
 
 def main():
@@ -85,7 +112,7 @@ def main():
     if len(sys.argv) < 2:
         sys.exit(f"""usage: {sys.argv[0]} PAGE [# workers]""")
 
-    page = sys.argv[1]
+    manga_url = sys.argv[1]
 
     try:
         num_workers = int(sys.argv[2])
@@ -98,4 +125,4 @@ def main():
 
     # This takes a little while to warmup.
     # uvloop.install()
-    asyncio.run(_main(page=page, workers=num_workers))
+    asyncio.run(_main(manga_url=manga_url, workers=num_workers))
