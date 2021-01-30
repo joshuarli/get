@@ -1,74 +1,87 @@
 import asyncio
+import gc
 import os
 import sys
-from pathlib import Path
+from dataclasses import dataclass
 
 import httpx
-import uvloop
 
-# Mangadex has "data saver" servers which serve pretty compressed images,
-# I haven't yet figured out how to get it from their API.
+# from pathlib import Path
 
-# Right now it's pretty much sequential out of respect for mangadex.
-# It's async because I copypasted from mangakakalot.
+
+# import uvloop
+
+# I want to go as fast as possible for small scripts,
+# and a few manual dels is primarily useful for readability
+# (the memory freed is barely thorough in comparison)
+gc.disable()
+
+
+@dataclass
+class Chapter:
+    id: int
+    name: str
+    number: str
 
 
 async def _main(*, page, workers):
-    http = httpx.AsyncClient(timeout=None)
-    lang = "gb"  # mangadex lang_name English
-
+    # TODO: https://www.python-httpx.org/http2/
+    http = httpx.AsyncClient(base_url="https://api.mangadex.org/v2/", timeout=None)
     print("Getting chapter list.")
 
     # https://mangadex.org/title/499/teppu/
-    title_id = page.rstrip("/").split("/")[-2]
-    r = await http.get(f"https://mangadex.org/api/manga/{title_id}")
+    manga_id = page.rstrip("/").split("/")[-2]
+    # r = await http.get(f"/manga/{manga_id}")
+    # r.raise_for_status()
+    # data_manga = r.json()["data"]
+    # title = data_manga["title"]
+    # title_p = Path(title)
+    # title_p.mkdir(exist_ok=True)
+    # del data_manga
+
+    lang = "gb"  # english. They don't support this as a query param.
+    r = await http.get(f"/manga/{manga_id}/chapters")
     r.raise_for_status()
-    data = r.json()
-
-    title = data["manga"]["title"]
-    title_p = Path(title)
-    title_p.mkdir(exist_ok=True)
-
-    chapters = sorted(
-        filter(lambda x: x[1]["lang_code"] == lang, data["chapter"].items()),
-        key=lambda x: x[1]["chapter"],
-    )
+    data_chapters = r.json()["data"]["chapters"]
+    chapters = [
+        Chapter(
+            id=_["id"],
+            name=_["title"],
+            number=_["chapter"],
+        )
+        for _ in data_chapters
+        if _["language"] == lang
+    ]
+    del data_chapters
 
     print(f"Found {len(chapters)} chapters (lang {lang}).")
 
-    for chapter_id, chapter in chapters:
-        chapter_no = chapter["chapter"]
-
-        r = await http.get(f"https://mangadex.org/api/chapter/{chapter_id}")
+    for c in chapters:
+        # TODO: make this not sequential.
+        r = await http.get(f"/chapter/{c.id}")
         r.raise_for_status()
-        data = r.json()
-        # assert chapter_no == data["chapter"]
+        chapter_data = r.json()["data"]
 
-        chapter_p = title_p / chapter_no
+        # btw there's a serverFallback, I'm ignoring for now.
+        image_uris = [
+            f"{chapter_data['server']}{filename}" for filename in chapter_data["pages"]
+        ]
+        del chapter_data
 
-        image_base_url = f"{data['server']}{data['hash']}/"
-        downloads = []
+        # TODO: populate a global client pool
+        # as we queue the requests to make
+        # also skip if file exists
+        print("\n".join(image_uris))
 
-        for page_name in data["page_array"]:
-            image_p = chapter_p / page_name
-            if image_p.is_file():
-                print(f"{image_p} already exists; skipping.")
-                continue
-
-            image_src_url = image_base_url + page_name
-            print(image_src_url, "->", image_p)
-            downloads.append((image_src_url, str(image_p)))
-
-        # TODO dest is not correcrtly relative
-        # need to strip away title
-        with open(title_p / "aria2c_downloads", mode="w") as f:
-            f.writelines((f"{url}\n\tout={dest}\n" for url, dest in downloads))
+        # chapter_p = title_p / c.number
+        # image_p = chapter_p / page_name
+        # image_p.is_file()
 
     await http.aclose()
 
 
 def main():
-    # argparse todo
+    # TODO: argparse
     if len(sys.argv) < 2:
         sys.exit(f"""usage: {sys.argv[0]} PAGE [# workers]""")
 
@@ -83,5 +96,6 @@ def main():
 
     assert num_workers > 0
 
-    uvloop.install()
+    # This takes a little while to warmup.
+    # uvloop.install()
     asyncio.run(_main(page=page, workers=num_workers))
