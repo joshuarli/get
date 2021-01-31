@@ -19,22 +19,27 @@ class Chapter:
 class Page:
     http_client: httpx.AsyncClient
     http_path: str
-    dest: Path
+    dest: Path  # dest.parent is assumed to exist as a dir on the disk
 
     async def download(self):
-        print(self.dest)
-        r = await self.http_client.get(self.http_path)
-        r.raise_for_status()
-        # TODO: We could avoid a lot of makedirs calls at page_q
-        # population time, and assume dest's dir exists.
-        os.makedirs(self.dest.parent, exist_ok=True)
+        try:
+            r = await self.http_client.get(self.http_path)
+            r.raise_for_status()
+        except httpx.HTTPError as e:
+            print(
+                f"download fail [{self.dest}] "
+                f"http error code {e.response.status_code} for {e.request.url}"
+            )
+            return
+
         self.dest.write_bytes(r.content)
+        print(f"download success [{self.dest}]")
 
 
 async def _main(*, manga_url, num_workers):
     # API v2 documentation can be read at https://api.mangadex.org/v2/
     # Last time I tried http2 client, it seemed not great.
-    api = httpx.AsyncClient(base_url="https://api.mangadex.org/v2/", timeout=None)
+    api = httpx.AsyncClient(base_url="https://api.mangadex.org/v2/")
     print("Getting chapter list.")
 
     # https://mangadex.org/title/499/teppu/
@@ -59,7 +64,6 @@ async def _main(*, manga_url, num_workers):
                     number=c["chapter"],
                 )
             )
-            break  # just one chapter for now to iterate on downloading
 
     print(f"Found {chapter_q.qsize()} chapters (lang {lang}).")
 
@@ -84,11 +88,11 @@ async def _main(*, manga_url, num_workers):
                 # Build up the client pool.
                 server = chapter_data["server"]
                 if server not in downloaders:
-                    downloaders[server] = httpx.AsyncClient(
-                        base_url=server, timeout=None
-                    )
+                    downloaders[server] = httpx.AsyncClient(base_url=server)
 
-                dest_p = title_p / chapter.number / filename
+                chapter_p = title_p / chapter.number
+                os.makedirs(chapter_p, exist_ok=True)
+                dest_p = chapter_p / filename
 
                 if dest_p.is_file():
                     print(f"Skipped {dest_p} because file exists.")
@@ -111,9 +115,6 @@ async def _main(*, manga_url, num_workers):
             except asyncio.QueueEmpty:
                 return
 
-            # TODO: If this fails, we shouldn't abort the whole program.
-            # I think need to set return_exceptions=True on asyncio.gather
-            # and iterate through the result list and report.
             await page.download()
 
     await asyncio.gather(*(downloader_worker() for _ in range(num_workers)))
