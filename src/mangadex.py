@@ -8,14 +8,14 @@ import httpx
 import uvloop
 
 
-@dataclass
+@dataclass(frozen=True, eq=False, repr=False)
 class Chapter:
     id: int
     name: str
     number: str
 
 
-@dataclass
+@dataclass(frozen=True, eq=False, repr=False)
 class Page:
     http_client: httpx.AsyncClient
     http_path: str
