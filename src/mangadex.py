@@ -25,10 +25,17 @@ class Page:
         try:
             r = await self.http_client.get(self.http_path)
             r.raise_for_status()
-        except httpx.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             print(
-                f"download fail [{self.dest}] "
-                f"http error code {e.response.status_code} for {e.request.url}"
+                f"download fail [{self.dest}] reason: "
+                f"error code {e.response.status_code} for {e.request.url}"
+            )
+            return
+        except httpx.RequestError as e:
+            print(
+                # This is usually a TimeoutException or NetworkError.
+                f"download fail [{self.dest}] reason: "
+                f"{e} for {e.request.url}"
             )
             return
 
