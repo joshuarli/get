@@ -112,6 +112,8 @@ async def _main(*, manga_url, num_workers):
                 )
                 page_q.put_nowait(p)
 
+            print(f"success fetching pages for {chapter.number}")
+
     await asyncio.gather(*(page_worker() for _ in range(num_workers)))
 
     # Consume from page_q.
