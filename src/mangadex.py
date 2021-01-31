@@ -22,21 +22,8 @@ class Page:
     dest: Path  # dest.parent is assumed to exist as a dir on the disk
 
     async def download(self):
-        try:
-            r = await self.http_client.get(self.http_path)
-            r.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            print(
-                f"download fail [{self.dest}] reason: "
-                f"error code {e.response.status_code} for {e.request.url}"
-            )
-            return
-        except httpx.RequestError as e:
-            # httpx.ReadTimeout are empty as str.
-            reason = "read timeout" if isinstance(e, httpx.ReadTimeout) else str(e)
-            print(f"download fail [{self.dest}] reason: {reason} for {e.request.url}")
-            return
-
+        r = await self.http_client.get(self.http_path)
+        r.raise_for_status()
         self.dest.write_bytes(r.content)
         print(f"download success [{self.dest}]")
 
@@ -130,7 +117,23 @@ async def _main(*, manga_url, num_workers):
             except asyncio.QueueEmpty:
                 return
 
-            await page.download()
+            try:
+                await page.download()
+                continue
+            except httpx.HTTPStatusError as e:
+                print(
+                    f"download fail [{page.dest}] reason: "
+                    f"error code {e.response.status_code} for {e.request.url}"
+                )
+            except httpx.RequestError as e:
+                # httpx.ReadTimeout are empty as str.
+                reason = "read timeout" if isinstance(e, httpx.ReadTimeout) else str(e)
+                print(
+                    f"download fail [{page.dest}] reason: {reason} for {e.request.url}"
+                )
+
+            # TODO: should requeue with a custom timeout that exponentially backs off
+            page_q.put_nowait(page)
 
     await asyncio.gather(*(downloader_worker() for _ in range(num_workers)))
 
