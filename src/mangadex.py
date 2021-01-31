@@ -25,14 +25,15 @@ class Page:
         print(self.dest)
         r = await self.http_client.get(self.http_path)
         r.raise_for_status()
+        # TODO: We could avoid a lot of makedirs calls at page_q
+        # population time, and assume dest's dir exists.
         os.makedirs(self.dest.parent, exist_ok=True)
         self.dest.write_bytes(r.content)
 
 
-async def _main(*, manga_url, workers):
-    # TODO: https://www.python-httpx.org/http2/
-    #       Okay I tried http2, server's pretty unstable.
+async def _main(*, manga_url, num_workers):
     # API v2 documentation can be read at https://api.mangadex.org/v2/
+    # Last time I tried http2 client, it seemed not great.
     api = httpx.AsyncClient(base_url="https://api.mangadex.org/v2/", timeout=None)
     print("Getting chapter list.")
 
@@ -62,7 +63,7 @@ async def _main(*, manga_url, workers):
 
     print(f"Found {chapter_q.qsize()} chapters (lang {lang}).")
 
-    downloaders = dict()  # are dicts async safe?
+    downloaders = dict()
     page_q = asyncio.Queue()
 
     # Consume from chapter_q, produce to page_q.
@@ -74,7 +75,7 @@ async def _main(*, manga_url, workers):
                 return
 
             # TODO: pass cli option for data saver
-            r = await api.get(f"/chapter/{chapter.id}", params={"saver": "true"})
+            r = await api.get(f"/chapter/{chapter.id}", params={"saver": "false"})
             r.raise_for_status()
             chapter_data = r.json()["data"]
 
@@ -90,7 +91,7 @@ async def _main(*, manga_url, workers):
                 dest_p = title_p / chapter.number / filename
 
                 if dest_p.is_file():
-                    print(f"skipped {dest_p} because file exists.")
+                    print(f"Skipped {dest_p} because file exists.")
                     continue
 
                 p = Page(
@@ -100,7 +101,7 @@ async def _main(*, manga_url, workers):
                 )
                 page_q.put_nowait(p)
 
-    await asyncio.gather(*(page_worker() for _ in range(workers)))
+    await asyncio.gather(*(page_worker() for _ in range(num_workers)))
 
     # Consume from page_q.
     async def downloader_worker():
@@ -110,10 +111,12 @@ async def _main(*, manga_url, workers):
             except asyncio.QueueEmpty:
                 return
 
-            # TODO: failure modes?
+            # TODO: If this fails, we shouldn't abort the whole program.
+            # I think need to set return_exceptions=True on asyncio.gather
+            # and iterate through the result list and report.
             await page.download()
 
-    await asyncio.gather(*(downloader_worker() for _ in range(workers)))
+    await asyncio.gather(*(downloader_worker() for _ in range(num_workers)))
 
     await api.aclose()
     for http_client in downloaders.values():
@@ -137,4 +140,4 @@ def main():
     assert num_workers > 0
 
     uvloop.install()
-    asyncio.run(_main(manga_url=manga_url, workers=num_workers))
+    asyncio.run(_main(manga_url=manga_url, num_workers=num_workers))
