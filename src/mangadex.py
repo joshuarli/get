@@ -32,11 +32,9 @@ class Page:
             )
             return
         except httpx.RequestError as e:
-            print(
-                # This is usually a TimeoutException or NetworkError.
-                f"download fail [{self.dest}] reason: "
-                f"{e} for {e.request.url}"
-            )
+            # httpx.ReadTimeout are empty as str.
+            reason = "read timeout" if isinstance(e, httpx.ReadTimeout) else str(e)
+            print(f"download fail [{self.dest}] reason: {reason} for {e.request.url}")
             return
 
         self.dest.write_bytes(r.content)
@@ -61,9 +59,13 @@ async def _main(*, manga_url, num_workers):
     chapter_q = asyncio.Queue()
     r = await api.get(f"/manga/{manga_id}/chapters")
     r.raise_for_status()
+
     data_chapters = r.json()["data"]["chapters"]
     for c in data_chapters:
         if c["language"] == lang:
+            # TODO: Provide the ability to select groups interactively.
+            #       This is going to require more lookups to the api.
+            assert len(c["groups"]) == 1
             chapter_q.put_nowait(
                 Chapter(
                     id=c["id"],
@@ -95,7 +97,11 @@ async def _main(*, manga_url, num_workers):
                 # Build up the client pool.
                 server = chapter_data["server"]
                 if server not in downloaders:
-                    downloaders[server] = httpx.AsyncClient(base_url=server)
+                    downloaders[server] = httpx.AsyncClient(
+                        base_url=server,
+                        # The default 5s is too slow.
+                        timeout=1,  # TODO: make this configurable
+                    )
 
                 chapter_p = title_p / chapter.number
                 os.makedirs(chapter_p, exist_ok=True)
