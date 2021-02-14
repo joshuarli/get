@@ -52,6 +52,7 @@ async def _main(*, manga_url, num_workers):
         if c["language"] == lang:
             # TODO: Provide the ability to select groups interactively.
             #       This is going to require more lookups to the api.
+            # TODO: As an example, Musume no Tomodachi ch 62 has Daphie's and a no group uploader.
             assert len(c["groups"]) == 1
             chapter_q.put_nowait(
                 Chapter(
@@ -84,6 +85,9 @@ async def _main(*, manga_url, num_workers):
                 # Build up the client pool.
                 server = chapter_data["server"]
                 if server not in downloaders:
+                    # Note: I don't account for oom here, I personally haven't had a problem
+                    #       because I haven't tried downloading extremely large manga.
+                    #       But it can potentially become one, I haven't looked into it much.
                     downloaders[server] = httpx.AsyncClient(
                         base_url=server,
                         # The default 5s is too slow.
@@ -126,13 +130,13 @@ async def _main(*, manga_url, num_workers):
                     f"error code {e.response.status_code} for {e.request.url}"
                 )
             except httpx.RequestError as e:
-                # httpx.ReadTimeout are empty as str.
-                reason = "read timeout" if isinstance(e, httpx.ReadTimeout) else str(e)
-                print(
-                    f"download fail [{page.dest}] reason: {reason} for {e.request.url}"
-                )
+                # As far as I've seen, at least ReadTimeout and ConnectTimeout are empty as str.
+                # So, just repr them for now - but it'd be nice to contribute to upstream
+                # to be more specific here.
+                print(f"download fail [{page.dest}] reason: {e!r} for {e.request.url}")
 
             # TODO: should requeue with a custom timeout that exponentially backs off
+            #       to a total # retries
             page_q.put_nowait(page)
 
     await asyncio.gather(*(downloader_worker() for _ in range(num_workers)))
