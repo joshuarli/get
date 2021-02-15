@@ -13,6 +13,7 @@ setup(
     entry_points={
         "console_scripts": [
             "get-mangadex=src.mangadex:main",
+            "get-podcasts-ingest-rss=src.podcasts.rss:main",
         ]
     },
     python_requires=">=3.7",
