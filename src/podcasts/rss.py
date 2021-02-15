@@ -18,9 +18,6 @@ audio_mime_ext = {
     "audio/flac": ".flac",
 }
 
-# TODO: healthcheck would be cool to do on startup
-db_client = httpx.Client(base_url="http://127.0.0.1:7700")
-
 # meilisearch: a document primary key can be of type integer or string only
 # composed of alphanumeric characters, hyphens (-) and underscores (_)
 is_valid_pk = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -30,6 +27,17 @@ def main():
     # TODO: argparse and #workers flag when async
     if len(sys.argv) < 2:
         sys.exit(f"""usage: {sys.argv[0]} RSS [RSS...]""")
+
+    db_client = httpx.Client(base_url="http://127.0.0.1:7700")
+
+    try:
+        db_client.get("/health")
+        db_client.raise_for_status()
+    except httpx.HTTPError as e:
+        # As far as I've seen, at least ReadTimeout and ConnectTimeout are empty as str.
+        # So, just repr them for now - but it'd be nice to contribute to upstream
+        # to be more specific here.
+        sys.exit(f"meilisearch healthcheck failed: {e!r}")
 
     for feed_url in sys.argv[1:]:
         # note: parse does accept remote urls, but we should offload this to async httpx
