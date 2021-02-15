@@ -4,5 +4,5 @@ format:
 	python -m flake8 src/ setup.py
 
 install:
-	pip --require-virtualenv --disable-pip-version-check install pip --upgrade "pip<=20.3"
+	pip --require-virtualenv --disable-pip-version-check install --upgrade "pip<=20.3"
 	pip --disable-pip-version-check install -e ".[dev]"
