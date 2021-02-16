@@ -11,8 +11,6 @@ import httpx
 # TODO: make async, 1 async worker for every feed
 # TODO: store persistent state to resume from somewhere
 
-# Note: there is a meilisearch python client, but my usage is fairly basic for now.
-
 audio_mime_ext = {
     "audio/mpeg": ".mp3",
     "audio/ogg": ".opus",
@@ -48,22 +46,18 @@ def main():
         # TODO: ingest podcast metadata in the future
         # feed.channel.image
         # feed.channel.subtitle
-        print(f"Parsing {podcast_title}...")
-
         # Hmm, is feed.channel.published, feed.channel.updated of any use?
+        print(f"Parsing {podcast_title}...")
 
         raw_episodes = feed.entries
         print(f"Found {len(raw_episodes)} episodes.")
 
         episodes = []
-
         for ep in raw_episodes:
             episode_data = {}
 
-            # Fallback to ep.itunes_title necessary?
-            title = ep.title
-            author = ep.author
-            print(f"Parsing `{author}` episode '{title}'...")
+            title = ep.title or ep.itunes_title
+            print(f"Parsing `{podcast_title}` episode '{title}'...")
 
             # We'll use this as the meilisearch pk for episodes.
             # https://itunespartner.apple.com/podcasts/articles/podcast-requirements-3058
@@ -74,7 +68,7 @@ def main():
                     f"WARNING: found invalid pk `{pk}`, so generating a replacement checksum."
                 )
                 h = blake2b()
-                h.update(f"{author} {title}".encode())
+                h.update(f"{podcast_title} {title}".encode())
                 pk = h.hexdigest()
 
             episode_data["id"] = pk
@@ -99,26 +93,19 @@ def main():
             episode_data["audio_src"] = ep.enclosures[0].href
 
             episode_data["title"] = title
-
+            episode_data["podcast"] = podcast_title
             episode_data["description"] = ep.description
             episode_data["notes"] = ep.subtitle
-            episode_data["author"] = author
-
-            # Some other information to enable in future:
-            # ep.tags "terms"
-            # ep.itunes_episode is this... canonical?
-            # i suppose, could use publish date to logically determine this)
-
             # https://feedparser.readthedocs.io/en/latest/date-parsing.html
             # This published_parsed is UTC, therefore we use calendar.timegm.
             episode_data["timestamp_published"] = timegm(ep.published_parsed)
 
-            # Interesting metadata to generate here would be to
-            # actually async download and recompress the audio (2ch 96k opus)
-            # and then update the relevant item with episode duration.
-            # Wonder if the way to go here is to store the audio on disk
-            # with meilisearch primary key as filename.
-            # Also then, I wouldn't have to worry about audio source url getting stale.
+            # optional information
+            episode_data["duration"] = ep.get("itunes_duration", "")
+            # you could in theory use publish date to logically determine this
+            episode_data["episode_no"] = ep.get("itunes_episode", "")
+            # are ep.tags useful?
+            # ep.tags "terms"
 
             episodes.append(episode_data)
 
