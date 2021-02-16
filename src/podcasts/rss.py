@@ -126,10 +126,38 @@ def main():
         resp = db_client.put("/indexes/episodes/documents", json=episodes)
         resp.raise_for_status()
         update_id = resp.json()["updateId"]
+        print(f"submitted update id {update_id}")
 
         # You have to inspect the update to see failure modes.
         # See: https://docs.meilisearch.com/learn/advanced/asynchronous_updates.html
-        time.sleep(1)
-        resp = db_client.get(f"/indexes/episodes/updates/{update_id}")
-        resp.raise_for_status()
-        print(resp.json())
+        # Start delay 250ms, then exponentially backoff factor of 2, limit 1 minute ELASPED.
+        wait, elasped = 250, 0
+        while True:
+            time.sleep(wait * 0.001)
+            print(f"polling update id {update_id}")
+
+            # TODO: make all of this more robust
+
+            resp = db_client.get(f"/indexes/episodes/updates/{update_id}")
+            resp.raise_for_status()
+            status = resp.json()["status"]  # enqueued, processed, failed
+
+            if status == "processed":
+                print(f"update id {update_id} SUCCESS!")
+                break
+            elif status == "enqueued":
+                pass
+            elif status == "failed":
+                print(f"update id {update_id} FAILED!")
+                break
+            else:
+                exit(f"update id {update_id} unexpected status: {status}")
+
+            elasped += wait
+            if elasped >= 60000:
+                print(
+                    f"database update id {update_id} taking longer than expected to succeed, giving up on checking it"
+                )
+                break
+
+            wait *= 2
