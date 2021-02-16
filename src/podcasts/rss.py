@@ -2,6 +2,7 @@ import re
 import sys
 import time
 from calendar import timegm
+from hashlib import blake2b
 
 import feedparser
 import httpx
@@ -31,8 +32,8 @@ def main():
     db_client = httpx.Client(base_url="http://127.0.0.1:7700")
 
     try:
-        db_client.get("/health")
-        db_client.raise_for_status()
+        resp = db_client.get("/health")
+        resp.raise_for_status()
     except httpx.HTTPError as e:
         # As far as I've seen, at least ReadTimeout and ConnectTimeout are empty as str.
         # So, just repr them for now - but it'd be nice to contribute to upstream
@@ -61,19 +62,20 @@ def main():
 
             # Fallback to ep.itunes_title necessary?
             title = ep.title
-            print(f"Parsing episode '{title}'...")
+            author = ep.author
+            print(f"Parsing `{author}` episode '{title}'...")
 
             # We'll use this as the meilisearch pk for episodes.
             # https://itunespartner.apple.com/podcasts/articles/podcast-requirements-3058
             # "All episodes must contain a globally unique identifier (GUID), which never changes."
             pk = ep.id
             if is_valid_pk.match(pk) is None:
-                # TODO do this.
                 print(
-                    f"WARNING: found invalid pk `{pk}`, so generating a checksum as a replacement."
+                    f"WARNING: found invalid pk `{pk}`, so generating a replacement checksum."
                 )
-                # breakpoint()
-                continue
+                h = blake2b()
+                h.update(f"{author} {title}".encode())
+                pk = h.hexdigest()
 
             episode_data["id"] = pk
 
@@ -100,7 +102,7 @@ def main():
 
             episode_data["description"] = ep.description
             episode_data["notes"] = ep.subtitle
-            episode_data["author"] = ep.author
+            episode_data["author"] = author
 
             # Some other information to enable in future:
             # ep.tags "terms"
