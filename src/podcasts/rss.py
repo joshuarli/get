@@ -1,3 +1,4 @@
+import logging
 import re
 import sys
 import time
@@ -27,16 +28,25 @@ def main():
     if len(sys.argv) < 2:
         sys.exit(f"""usage: {sys.argv[0]} RSS [RSS...]""")
 
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)-8s %(levelname)-8s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    log_main = logging.getLogger("main")
+
     db_client = httpx.Client(base_url="http://127.0.0.1:7700")
 
     try:
         resp = db_client.get("/health")
         resp.raise_for_status()
-    except httpx.HTTPError as e:
+    except httpx.HTTPError:
         # As far as I've seen, at least ReadTimeout and ConnectTimeout are empty as str.
         # So, just repr them for now - but it'd be nice to contribute to upstream
         # to be more specific here.
-        sys.exit(f"meilisearch healthcheck failed: {e!r}")
+        log_main.exception("meilisearch healthcheck failed!")
+        sys.exit(1)
 
     for feed_url in sys.argv[1:]:
         # note: parse does accept remote urls, but we should offload this to async httpx
@@ -47,25 +57,25 @@ def main():
         # feed.channel.image
         # feed.channel.subtitle
         # Hmm, is feed.channel.published, feed.channel.updated of any use?
-        print(f"Parsing {podcast_title}...")
+        log_main.info(f"Parsing {podcast_title}...")
 
         raw_episodes = feed.entries
-        print(f"Found {len(raw_episodes)} episodes.")
+        log_main.info(f"Found {len(raw_episodes)} episodes.")
 
         episodes = []
         for ep in raw_episodes:
             episode_data = {}
 
             title = ep.title or ep.itunes_title
-            print(f"Parsing `{podcast_title}` episode '{title}'...")
+            log_main.info(f"Parsing `{podcast_title}` episode '{title}'...")
 
             # We'll use this as the meilisearch pk for episodes.
             # https://itunespartner.apple.com/podcasts/articles/podcast-requirements-3058
             # "All episodes must contain a globally unique identifier (GUID), which never changes."
             pk = ep.id
             if is_valid_pk.match(pk) is None:
-                print(
-                    f"WARNING: found invalid pk `{pk}`, so generating a replacement checksum."
+                log_main.info(
+                    f"Found invalid pk `{pk}`, so generating a replacement checksum."
                 )
                 h = blake2b()
                 h.update(f"{podcast_title} {title}".encode())
@@ -86,7 +96,7 @@ def main():
             mimetype = ep.enclosures[0].type
             ext = audio_mime_ext.get(mimetype, None)
             if ext is None:
-                print(f"Skipping due to unrecognized mimetype {mimetype}.")
+                log_main.warning(f"Skipping due to unrecognized mimetype {mimetype}.")
                 continue
 
             episode_data["audio_ext"] = ext
@@ -113,7 +123,7 @@ def main():
         resp = db_client.put("/indexes/episodes/documents", json=episodes)
         resp.raise_for_status()
         update_id = resp.json()["updateId"]
-        print(f"submitted update id {update_id}")
+        log_main.info(f"submitted update id {update_id}")
 
         # You have to inspect the update to see failure modes.
         # See: https://docs.meilisearch.com/learn/advanced/asynchronous_updates.html
@@ -121,7 +131,7 @@ def main():
         wait, elasped = 250, 0
         while True:
             time.sleep(wait * 0.001)
-            print(f"polling update id {update_id}")
+            log_main.info(f"polling update id {update_id}")
 
             # TODO: make all of this more robust
 
@@ -130,20 +140,22 @@ def main():
             status = resp.json()["status"]  # enqueued, processed, failed
 
             if status == "processed":
-                print(f"update id {update_id} SUCCESS!")
+                log_main.info(f"update id {update_id} SUCCESS!")
                 break
             elif status == "enqueued":
                 pass
             elif status == "failed":
-                print(f"update id {update_id} FAILED!")
+                log_main.error(f"update id {update_id} FAILED!")
                 break
             else:
+                # need to be more robust
                 exit(f"update id {update_id} unexpected status: {status}")
 
             elasped += wait
             if elasped >= 60000:
-                print(
-                    f"database update id {update_id} taking longer than expected to succeed, giving up on checking it"
+                log_main.warning(
+                    f"database update id {update_id}"
+                    "taking longer than expected to succeed, giving up on checking it"
                 )
                 break
 
