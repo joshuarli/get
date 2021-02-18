@@ -1,8 +1,6 @@
-format:
-	python -m isort src/ setup.py
-	python -m black src/ setup.py
-	python -m flake8 src/ setup.py
+PIP := python -m pip --disable-pip-version-check
 
 install:
-	pip --require-virtualenv --disable-pip-version-check install --upgrade "pip<=20.3"
-	pip --disable-pip-version-check install -e ".[dev]"
+	$(PIP) --require-virtualenv install --upgrade "pip<=20.3"
+	$(PIP)  install -e ".[dev]"
+	pre-commit install --install-hooks
