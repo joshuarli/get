@@ -1,9 +1,11 @@
+import json
 import logging
 import re
 import sys
 import time
 from calendar import timegm
 from hashlib import blake2b
+from pathlib import Path
 
 import feedparser
 import httpx
@@ -36,6 +38,16 @@ def main():
 
     log_main = logging.getLogger("main")
 
+    # Ideally this is sqlite, but we just don't persist much data at all,
+    # so I'm ok with inhaling a blob of json every update.
+    # TODO: better filepath lol
+    appdata_file = Path("get-podcasts-ingest-rss.json")
+    appdata_file.touch(exist_ok=True)
+    _appdata = appdata_file.read_text().strip()
+    if not _appdata:
+        _appdata = '{"podcasts": {}}'
+    appdata = json.loads(_appdata)
+
     db_client = httpx.Client(base_url="http://127.0.0.1:7700")
 
     try:
@@ -50,17 +62,36 @@ def main():
 
     for feed_url in sys.argv[1:]:
         # note: parse does accept remote urls, but we should offload this to async httpx
+        # TODO: https://fishbowl.pastiche.org/2002/10/21/http_conditional_get_for_rss_hackers
+        # Uhh also, it's different than how I would imagine it (HEAD for Last-Modified)
+        # But we'd wanna use this to reduce bandwidth usage,
+        # and then later lastBuildDate (perhaps an assert too, to make sure things
+        # make sense) to filter the actual rss items for appending.
+        # Not sure if it's really worth parsing entire thing and letting the
+        # db reingest and update everything.
+        log_main.info(f"Fetching {feed_url}...")
         feed = feedparser.parse(feed_url)
-
         podcast_title = feed.channel.title
         # TODO: ingest podcast metadata in the future
         # feed.channel.image
         # feed.channel.subtitle
-        # Hmm, is feed.channel.published, feed.channel.updated of any use?
-        log_main.info(f"Parsing {podcast_title}...")
 
+        # TODO: put this behind a "last_updated" key.
+        last_updated_timestamp = appdata["podcasts"].get(podcast_title, 0)
+        updated_timestamp = timegm(feed.channel.updated_parsed)
+        # feed.channel.updated_parsed comes from RSS's lastBuildDate.
+        # We'll use it to see if there are any changes.
+        # https://feedparser.readthedocs.io/en/latest/date-parsing.html
+        # parsed timestamps are UTC, therefore we use calendar.timegm.
+        if updated_timestamp <= last_updated_timestamp:
+            log_main.info(
+                f"No new updates for {podcast_title} (reason: lastBuildDate), skipping."
+            )
+            continue
+
+        # TODO filter for new.
         raw_episodes = feed.entries
-        log_main.info(f"Found {len(raw_episodes)} episodes.")
+        log_main.info(f"Found {len(raw_episodes)} new episodes.")
 
         episodes = []
         for ep in raw_episodes:
@@ -106,8 +137,6 @@ def main():
             episode_data["podcast"] = podcast_title
             episode_data["description"] = ep.description
             episode_data["notes"] = ep.subtitle
-            # https://feedparser.readthedocs.io/en/latest/date-parsing.html
-            # This published_parsed is UTC, therefore we use calendar.timegm.
             episode_data["timestamp_published"] = timegm(ep.published_parsed)
 
             # optional information
@@ -141,6 +170,8 @@ def main():
 
             if status == "processed":
                 log_main.info(f"update id {update_id} SUCCESS!")
+                appdata["podcasts"][podcast_title] = updated_timestamp
+                appdata_file.write_text(json.dumps(appdata))
                 break
             elif status == "enqueued":
                 pass
