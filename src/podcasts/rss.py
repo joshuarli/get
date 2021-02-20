@@ -72,41 +72,55 @@ def main():
         log_main.info(f"Fetching {feed_url}...")
         feed = feedparser.parse(feed_url)
         podcast_title = feed.channel.title
+
+        # TODO: at this point, assuming network fetch is taken care of by other worker,
+        #       fire off separate workers with a separate logger with podcast_title slugified
+        #       and remove the {podcast_title}: prefix stuff.
+
         # TODO: ingest podcast metadata in the future
         # feed.channel.image
         # feed.channel.subtitle
 
         # TODO: put this behind a "last_updated" key.
         last_updated_timestamp = appdata["podcasts"].get(podcast_title, 0)
-        updated_timestamp = timegm(feed.channel.updated_parsed)
+
         # feed.channel.updated_parsed comes from RSS's lastBuildDate.
         # We'll use it to see if there are any changes.
-        # https://feedparser.readthedocs.io/en/latest/date-parsing.html
-        # parsed timestamps are UTC, therefore we use calendar.timegm.
-        if updated_timestamp <= last_updated_timestamp:
-            log_main.info(
-                f"No new updates for {podcast_title} (reason: lastBuildDate), skipping."
-            )
-            continue
+        updated_timestamp = 0
+        updated_parsed = feed.channel.get("updated_parsed", None)
+        if updated_parsed is None:
+            # Unfortunately, some podcasts don't have it.
+            log_main.warn(f"{podcast_title}: No lastBuildDate found.")
+        else:
+            # https://feedparser.readthedocs.io/en/latest/date-parsing.html
+            # parsed timestamps are UTC, therefore we use calendar.timegm.
+            updated_timestamp = timegm(updated_parsed)
+            if updated_timestamp <= last_updated_timestamp:
+                log_main.info(
+                    f"{podcast_title}: No new updates "
+                    "(reason: lastBuildDate), skipping."
+                )
+                continue
 
         # TODO filter for new.
         raw_episodes = feed.entries
-        log_main.info(f"Found {len(raw_episodes)} new episodes.")
+        log_main.info(f"{podcast_title}: Found {len(raw_episodes)} new episodes.")
 
         episodes = []
         for ep in raw_episodes:
             episode_data = {}
 
             title = ep.title or ep.itunes_title
-            log_main.info(f"Parsing `{podcast_title}` episode '{title}'...")
+            log_main.info(f"`{podcast_title}`: Parsing episode '{title}'")
 
             # We'll use this as the meilisearch pk for episodes.
             # https://itunespartner.apple.com/podcasts/articles/podcast-requirements-3058
             # "All episodes must contain a globally unique identifier (GUID), which never changes."
             pk = ep.id
             if is_valid_pk.match(pk) is None:
-                log_main.info(
-                    f"Found invalid pk `{pk}`, so generating a replacement checksum."
+                log_main.debug(
+                    f"{podcast_title} episode `{title}`: Found invalid pk `{pk}`"
+                    ", so generating a replacement checksum."
                 )
                 h = blake2b()
                 h.update(f"{podcast_title} {title}".encode())
@@ -127,7 +141,10 @@ def main():
             mimetype = ep.enclosures[0].type
             ext = audio_mime_ext.get(mimetype, None)
             if ext is None:
-                log_main.warning(f"Skipping due to unrecognized mimetype {mimetype}.")
+                log_main.warning(
+                    f"{podcast_title} episode `{title}`: unrecognized mimetype "
+                    f"{mimetype}, skipping."
+                )
                 continue
 
             episode_data["audio_ext"] = ext
@@ -136,7 +153,7 @@ def main():
             episode_data["title"] = title
             episode_data["podcast"] = podcast_title
             episode_data["description"] = ep.description
-            episode_data["notes"] = ep.subtitle
+            episode_data["notes"] = ep.get("subtitle", "")
             episode_data["timestamp_published"] = timegm(ep.published_parsed)
 
             # optional information
