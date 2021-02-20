@@ -14,6 +14,7 @@ setup(
         "console_scripts": [
             "get-mangadex=src.mangadex:main",
             "get-podcasts-ingest-rss=src.podcasts.rss:main",
+            "get-podcasts-extract-opml=src.podcasts.opml:main",
         ]
     },
     python_requires=">=3.7",
