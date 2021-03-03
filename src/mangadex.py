@@ -164,6 +164,17 @@ async def _main(*, manga_url, num_workers):
                 page_q.put_nowait(page)
                 continue
             except httpx.RequestError as e:
+                if isinstance(e, httpx.ConnectError):
+                    # This is most likely SSLError for certificate expiration.
+                    # In this specific case, let's just completely give up on retrying.
+                    print(
+                        f"download fail [{page.dest}] reason: {e!r} for {e.request.url}"
+                    )
+                    print(
+                        "Since this is a ConnectError, we're just going to completely "
+                        "give up and not requeue."
+                    )
+                    continue
                 # As far as I've seen, at least ReadTimeout and ConnectTimeout are empty as str.
                 # So, just repr them for now - but it'd be nice to contribute to upstream
                 # to be more specific here.
