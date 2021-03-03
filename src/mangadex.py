@@ -89,9 +89,24 @@ async def _main(*, manga_url, num_workers):
             except asyncio.QueueEmpty:
                 return
 
-            # TODO: pass cli option for data saver
-            r = await api.get(f"/chapter/{chapter.id}", params={"saver": "false"})
-            r.raise_for_status()
+            print(f"fetching pages for {chapter.number}")
+
+            try:
+                # TODO: pass cli option for data saver
+                r = await api.get(f"/chapter/{chapter.id}", params={"saver": "false"})
+                r.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                print(
+                    f"request fail, reason: "
+                    f"error code {e.response.status_code} for {e.request.url}"
+                )
+                chapter_q.put_nowait(chapter)
+                continue
+            except httpx.RequestError as e:
+                print(f"request fail, reason: {e!r} for {e.request.url}")
+                chapter_q.put_nowait(chapter)
+                continue
+
             chapter_data = r.json()["data"]
 
             # btw there's a serverFallback, I'm ignoring for now.
@@ -123,7 +138,7 @@ async def _main(*, manga_url, num_workers):
                 )
                 page_q.put_nowait(p)
 
-            print(f"success fetching pages for {chapter.number}")
+            print(f"fetching pages for {chapter.number}: SUCCESS")
 
     await asyncio.gather(*(page_worker() for _ in range(num_workers)))
 
@@ -137,21 +152,22 @@ async def _main(*, manga_url, num_workers):
 
             try:
                 await page.download()
-                continue
+            # TODO: should requeue with a custom timeout that exponentially backs off
+            #       to a total # retries
             except httpx.HTTPStatusError as e:
                 print(
                     f"download fail [{page.dest}] reason: "
                     f"error code {e.response.status_code} for {e.request.url}"
                 )
+                page_q.put_nowait(page)
+                continue
             except httpx.RequestError as e:
                 # As far as I've seen, at least ReadTimeout and ConnectTimeout are empty as str.
                 # So, just repr them for now - but it'd be nice to contribute to upstream
                 # to be more specific here.
                 print(f"download fail [{page.dest}] reason: {e!r} for {e.request.url}")
-
-            # TODO: should requeue with a custom timeout that exponentially backs off
-            #       to a total # retries
-            page_q.put_nowait(page)
+                page_q.put_nowait(page)
+                continue
 
     await asyncio.gather(*(downloader_worker() for _ in range(num_workers)))
 
