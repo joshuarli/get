@@ -73,12 +73,10 @@ async def _main(*, manga_url, num_workers):
         uploaders.append(uploader)
         print(f"\n{len(uploaders)}: {', '.join((c.number for c in chapters))}")
 
-    # Only ability to choose one uploader for now.
-    i = 1
-    if len(uploaders) > 1:
-        i = int(input("\nWhich uploader do you want? "))
-    for c in chapters_by_uploader[uploaders[i - 1]]:
-        chapter_q.put_nowait(c)
+    resp = input("\nWhich uploader(s) do you want? Provide CSV: ")
+    for i in map(int, resp.split(",")):
+        for c in chapters_by_uploader[uploaders[i - 1]]:
+            chapter_q.put_nowait(c)
 
     downloaders = dict()
     page_q = asyncio.Queue()
