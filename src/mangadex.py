@@ -1,11 +1,14 @@
 import asyncio
 import os
 import sys
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
 import uvloop
+
+from .util import alphanum_key
 
 
 @dataclass(frozen=True, eq=False, repr=False)
@@ -32,7 +35,7 @@ async def _main(*, manga_url, num_workers):
     # API v2 documentation can be read at https://api.mangadex.org/v2/
     # Last time I tried http2 client, it seemed not great.
     api = httpx.AsyncClient(base_url="https://api.mangadex.org/v2/")
-    print("Getting chapter list.")
+    print("Getting chapters.")
 
     # https://mangadex.org/title/499/teppu/
     manga_id = manga_url.rstrip("/").split("/")[-2]
@@ -48,13 +51,15 @@ async def _main(*, manga_url, num_workers):
     r.raise_for_status()
 
     data_chapters = r.json()["data"]["chapters"]
-    for c in data_chapters:
+    chapters_by_uploader = defaultdict(list)
+
+    for c in sorted(data_chapters, key=lambda _: alphanum_key(_["chapter"])):
         if c["language"] == lang:
-            # TODO: Provide the ability to select groups interactively.
-            #       This is going to require more lookups to the api.
-            # TODO: As an example, Musume no Tomodachi ch 62 has Daphie's and a no group uploader.
-            assert len(c["groups"]) == 1
-            chapter_q.put_nowait(
+            # There can be multiple c["groups"] here,
+            # but together they're a single uploader.
+            # I don't want to make more API calls to get the group name,
+            # so just convert to tuple and use that as a key.
+            chapters_by_uploader[tuple(c["groups"])].append(
                 Chapter(
                     id=c["id"],
                     name=c["title"],
@@ -62,7 +67,16 @@ async def _main(*, manga_url, num_workers):
                 )
             )
 
-    print(f"Found {chapter_q.qsize()} chapters (lang {lang}).")
+    print(f"Chapters by uploader for lang {lang}:")
+    uploaders = []
+    for uploader, chapters in chapters_by_uploader.items():
+        uploaders.append(uploader)
+        print(f"\n{len(uploaders)}: {', '.join((c.number for c in chapters))}")
+
+    # Only ability to choose one uploader for now.
+    i = int(input("\nWhich uploader do you want? "))
+    for c in chapters_by_uploader[uploaders[i - 1]]:
+        chapter_q.put_nowait(c)
 
     downloaders = dict()
     page_q = asyncio.Queue()
