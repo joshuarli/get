@@ -125,7 +125,7 @@ async def _main(*, manga_url, num_workers):
                         timeout=1,  # TODO: make this configurable
                     )
 
-                chapter_p = title_p / f"{uploader}-{chapter.number}"
+                chapter_p = title_p / f"{chapter.number}-{uploader}"
                 os.makedirs(chapter_p, exist_ok=True)
                 dest_p = chapter_p / filename
 
