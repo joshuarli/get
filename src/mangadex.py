@@ -8,7 +8,7 @@ from pathlib import Path
 import httpx
 import uvloop
 
-from .util import alphanum_key
+from .util import alphanum_key, slugify
 
 
 @dataclass(frozen=True, eq=False, repr=False)
@@ -74,7 +74,9 @@ async def _main(*, manga_url, num_workers):
         print(f"\n{len(uploaders)}: {', '.join((c.number for c in chapters))}")
 
     # Only ability to choose one uploader for now.
-    i = int(input("\nWhich uploader do you want? "))
+    i = 1
+    if len(uploaders) > 1:
+        i = int(input("\nWhich uploader do you want? "))
     for c in chapters_by_uploader[uploaders[i - 1]]:
         chapter_q.put_nowait(c)
 
@@ -108,6 +110,8 @@ async def _main(*, manga_url, num_workers):
                 continue
 
             chapter_data = r.json()["data"]
+            # The group names are present here, but not in the /manga/id/chapters API.
+            uploader = slugify("-".join((g["name"] for g in chapter_data["groups"])))
 
             # btw there's a serverFallback, I'm ignoring for now.
             for filename in chapter_data["pages"]:
@@ -123,7 +127,7 @@ async def _main(*, manga_url, num_workers):
                         timeout=1,  # TODO: make this configurable
                     )
 
-                chapter_p = title_p / chapter.number
+                chapter_p = title_p / f"{uploader}-{chapter.number}"
                 os.makedirs(chapter_p, exist_ok=True)
                 dest_p = chapter_p / filename
 
